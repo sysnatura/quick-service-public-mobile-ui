@@ -1,5 +1,5 @@
 class AppUrl {
-   static const String base_url = "https://aqsapi.aspiromtech.com/";
+   static const String base_url = "http://localhost:36365/";
    //static const String base_url = "https://5f48-111-92-63-14.in.ngrok.io/";
 
   static const String register_url = base_url + "Api/CustomerMobile/SaveCustomerMobile";

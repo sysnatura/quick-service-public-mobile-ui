@@ -4,6 +4,7 @@ import 'package:aqscustomer/ModelClasses/editaddresssecond.dart';
 import 'package:aqscustomer/providers/service_category_provider.dart';
 import 'package:aqscustomer/screens/services_list.dart';
 import 'package:aqscustomer/utils/Colors.dart';
+import 'package:aqscustomer/utils/module_image.dart';
 import 'package:aqscustomer/utils/widget.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -104,6 +105,7 @@ class _HomeFragmentState extends State<HomeFragment> {
                                                               crossAxisSpacing: 16),
                                                       itemCount:_items.length,
                                                       itemBuilder: (context, index) {
+                                                        final category = _items[index];
 
                                                         return InkResponse(
                                                           onTap: () async {
@@ -113,13 +115,12 @@ class _HomeFragmentState extends State<HomeFragment> {
                                                                     .getInstance();
                                                             preferences.setInt(
                                                                 "moduleId",
-                                                                value.responseString[index]
-                                                                    ["moduleId"]);
+                                                                category["moduleId"]);
                                                             Navigator.pushReplacement(
                                                                 context,
                                                                 MaterialPageRoute(
                                                                     builder: (newContext) =>
-                                                                        ServicesList(serviceName: _items[index]['name'],img: value.responseString[index]["imagePath"],)));
+                                                                        ServicesList(serviceName: category['name'],img: category["imagePath"],)));
                                                           },
                                                           child: Container(
                                                             padding: EdgeInsets.only(left: 5,right: 5),
@@ -138,13 +139,13 @@ class _HomeFragmentState extends State<HomeFragment> {
                                                                 Container(
                                                                   // alignment:
                                                                   //     Alignment.center,
-                                                                  child: Image.network(
-                                                                      "https://aqsapi.aspiromtech.com/ModuleImages/"+value.responseString[index]["imagePath"],
+                                                                  child: moduleImage(
+                                                                      category["imagePath"],
                                                                       color: Colors.lightBlue,
                                                                       height: 45,
                                                                       width: 45),
                                                                 ),
-                                                                Text(_items[index]['name'],
+                                                                Text(category['name'],
                                                                   style:
                                                                       textwithrobotolight(),
                                                                 )

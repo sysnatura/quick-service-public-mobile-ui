@@ -2,6 +2,7 @@ import 'package:aqscustomer/providers/service_list_provider.dart';
 import 'package:aqscustomer/screens/book_service.dart';
 import 'package:aqscustomer/screens/bottom_navigation.dart';
 import 'package:aqscustomer/utils/Colors.dart';
+import 'package:aqscustomer/utils/module_image.dart';
 import 'package:aqscustomer/utils/widget.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
@@ -152,7 +153,7 @@ class _ServicesListState extends State<ServicesList> {
                                 top: 40,
                                 child: Container(
                                   height: 240,
-                                  child: Image.network("https://aqsapi.aspiromtech.com/ModuleImages/"+widget.img,
+                                  child: moduleImage(widget.img,
                                       color: headcolor
                                   )
                                 )),

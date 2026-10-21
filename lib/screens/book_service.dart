@@ -404,20 +404,22 @@ class _BookServiceState extends State<BookService> {
                     )
                         : Container(
                         margin: EdgeInsets.only(top: 15, left: 10, right: 10),
-                        height: 180,
-                        child: ListView.builder(
+                        child: LayoutBuilder(
+                          builder: (context, constraints) => SingleChildScrollView(
                             scrollDirection: Axis.horizontal,
-                            shrinkWrap: true,
                             physics: BouncingScrollPhysics(),
-                            itemCount: value.responseString.length,
-                            itemBuilder: (context, index) {
+                            child: Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: List.generate(value.responseString.length, (index) {
                               value.responseString[index].setPrimary = false;
                               return Card(
                                 child: Container(
-                                  width: 300,
-                                  height: 300,
+                                  width: constraints.maxWidth < 308
+                                      ? constraints.maxWidth - 8
+                                      : 300,
                                   color: primaryColor,
                                   child: Column(
+                                    mainAxisSize: MainAxisSize.min,
                                     mainAxisAlignment:
                                     MainAxisAlignment.start,
                                     children: [
@@ -508,7 +510,7 @@ class _BookServiceState extends State<BookService> {
                                       Row(
                                         mainAxisAlignment: MainAxisAlignment.end,
                                         children: [
-                                          Text("Set as Primary",style: textwithblackrobotolight()),
+                                          Flexible(child: Text("Set as Primary",style: textwithblackrobotolight())),
                                           StatefulBuilder(
                                           builder: (context, setState) {
                                             if(value.responseString[index].isPrimary == 1){
@@ -551,7 +553,10 @@ class _BookServiceState extends State<BookService> {
                                   ),
                                 ),
                               );
-                            }));
+                            }),
+                            ),
+                          ),
+                        ));
                   }),
               GestureDetector(
                 onTap: () {
