@@ -33,7 +33,6 @@ class _ChangePasswordState extends State<ChangePassword> {
 
     final Map<String, dynamic> data = customer.toJson();
     String requestBody = json.encode(data);
-    print((data));
     var header = {
       "authorization": "BearerCompany$tokenValue",
       "Content-Type": "application/json"
@@ -44,24 +43,56 @@ class _ChangePasswordState extends State<ChangePassword> {
             AppUrl.change_password_url),
         body: requestBody,
         headers: header);
-    print(response.body);
     if (response.statusCode == 200) {
-      print(response.body);
-
-      final Profilepasswordchangetwo user = profilepasswordchangetwoFromJson(response.body);
-      if(user.statusCode == 200){
-        changedProfilePassword();
-      }else{
-        ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-                content: Text(user.statusDescription)));
+      final decoded = json.decode(response.body);
+      if (decoded is! Map<String, dynamic> || decoded['statusCode'] is! int) {
+        throw FormatException('Invalid password-change response');
       }
-      return user;
+      return Profilepasswordchangetwo.fromJson(decoded);
     } else {
       throw Exception('Failed to load change password profile');
     }
   }
-  Future<Profilepasswordchangetwo> item;
+  Future<void> _submit() async {
+    if (isClicked || !_form.currentState.validate()) return;
+    _form.currentState.save();
+    final currentPassword = _currentPassword.text;
+    final newPassword = _confirmPassword.text;
+    setState(() { isClicked = true; });
+    try {
+      final preferences = await SharedPreferences.getInstance();
+      final customerId = preferences.getInt("customerId");
+      if (customerId == null || customerId <= 0) {
+        throw StateError('Missing session');
+      }
+      if (!mounted) return;
+      final result = await ChangePass(Profilepasswordchangeone(
+        accountDto: AccountDto(
+          currentPassword: currentPassword,
+          passwordHash: newPassword,
+        ),
+        customerId: customerId,
+      ));
+      if (!mounted) return;
+      if (result.statusCode == 200) {
+        await changedProfilePassword();
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(result.statusCode == 100
+              ? 'Unable to validate your details. Please check them and try again.'
+              : 'Unable to change password. Please try again.'),
+        ));
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Unable to change password. Please try again.'),
+        ));
+      }
+    } finally {
+      if (mounted) setState(() { isClicked = false; });
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -97,6 +128,9 @@ class _ChangePasswordState extends State<ChangePassword> {
                         style: textwithblackrobotolight())),
                 TextFormField(
                   controller: _currentPassword,
+                  validator: (value) => value == null || value.isEmpty
+                      ? 'Enter Current Password'
+                      : null,
                   obscureText: true,
                   keyboardType: TextInputType.text,
                   decoration: buildInputDecorationWithIcon("", Icons.password),
@@ -143,43 +177,7 @@ class _ChangePasswordState extends State<ChangePassword> {
                     focusElevation: 0,
                     highlightElevation: 0,
                     shape: bordershape(),
-                    onPressed: () async {
-                      if (_form.currentState.validate()) {
-                        _form.currentState.save();
-                        if(_newPassword.text == _confirmPassword.text){
-                          print("Validated");
-                          SharedPreferences preferences=await SharedPreferences.getInstance();
-                          int customerId = preferences.getInt("customerId");
-                          String password = preferences.getString("password");
-
-                          if(_currentPassword.text != password){
-                            ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(
-                                    content: Text('Current password is wrong')));
-                          }else{
-
-                            setState(()  {
-                              isClicked = true;
-                              AccountDto dto = AccountDto(
-                                  currentPassword:password,
-                                  passwordHash: _confirmPassword.text
-                              );
-                              Profilepasswordchangeone model = Profilepasswordchangeone(
-                                accountDto: dto,
-                                customerId: customerId,
-                              );
-                              item = ChangePass(model);
-                            });
-                          }
-
-                        }else{
-                          print("is not equal");
-                        }
-                      }
-                      else{
-                        print("Not Validated");
-                      }
-                    },
+                    onPressed: isClicked ? null : _submit,
                     child: Text(
                       "Change Password",
                         style:  TextStyle(
@@ -204,7 +202,8 @@ class _ChangePasswordState extends State<ChangePassword> {
     return true;
   }
   Future<bool> changedProfilePassword() {
-    return showDialog(
+    if (!mounted) return Future<bool>.value(false);
+    return showDialog<bool>(
       context: context,
       builder: (context) {
         return AlertDialog(
@@ -215,6 +214,7 @@ class _ChangePasswordState extends State<ChangePassword> {
             FlatButton(
               child: Text('Ok',style: TextStyle(color: Colors.black87)),
               onPressed: () {
+                if (!mounted) return;
                 Navigator.pushReplacement(context,
                     MaterialPageRoute(builder: (newContext) => SettingsScreen()));
               },
@@ -222,6 +222,6 @@ class _ChangePasswordState extends State<ChangePassword> {
           ],
         );
       },
-    ) ?? false;
+    );
   }
 }

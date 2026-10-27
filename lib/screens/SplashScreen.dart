@@ -35,25 +35,33 @@ class _SplashScreenState extends State<SplashScreen> {
   @override
   void initState() {
     super.initState();
-    getToken().whenComplete(() async {
+    getToken().then((_) {
       Timer(
           Duration(seconds: 4),
-              () async => Navigator.pushReplacement(
+              () {
+                if (!mounted) return;
+                Navigator.pushReplacement(
               context,
               MaterialPageRoute(
-                  builder: (context) => tokenval == null
+                  builder: (context) => tokenval == null || tokenval.trim().isEmpty
                       ? LogIn()
-                      : BottomNavigation(currentIndex: 0))));
+                      : BottomNavigation(currentIndex: 0)));
+              });
     });
   }
   Future getToken() async{
+    tokenval = null;
+    try {
     final allUser = await dbHelper.queryAllRows();
+    if (allUser.isEmpty) {
+      tokenval = null;
+      return LogInModel();
+    }
     String _emailId=allUser[0]['username'];
     String _password=allUser[0]['password'];
-    print(_emailId);
-    print(_password);
 
-    if(_emailId!=null&&_password!=null){
+    if(_emailId!=null&&_emailId.trim().isNotEmpty&&
+        _password!=null&&_password.isNotEmpty){
 
         final Map<String, dynamic> apiBody = {
           "username": _emailId,
@@ -66,21 +74,26 @@ class _SplashScreenState extends State<SplashScreen> {
             body : json.encode(apiBody),
             headers : {'Content-Type':'application/json'}
         );
-        print("you bloody ${response.statusCode}");
         if(response.statusCode == 200){
           final LogInModel model = LogInModel.fromJson(json.decode(response.body));
-          tokenval = model.tokenValue;
+          if (model.tokenValue == null || model.tokenValue.trim().isEmpty) {
+            return LogInModel();
+          }
           SharedPreferences preferences = await SharedPreferences.getInstance();
           await preferences.setString(
               "tokenValue", model.tokenValue);
-          preferences.setInt("customerId", model.customerId);
-          preferences.setString("email", _emailId);
-          preferences.setString("password",_password );
+          await preferences.setInt("customerId", model.customerId);
+          await preferences.setString("email", _emailId);
+          await preferences.setString("password",_password );
+          tokenval = model.tokenValue;
 
         }
         }else {
           tokenval = null;
         }
+    } catch (_) {
+      tokenval = null;
+    }
         return LogInModel();
 
     }

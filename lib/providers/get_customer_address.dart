@@ -1,48 +1,57 @@
-import 'dart:convert';
-
 import 'package:aqscustomer/models/get_customer_address_list_model.dart';
 import 'package:aqscustomer/utils/base_url.dart';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+enum CustomerAddressStatus { loading, success, empty, failure }
+
 class GetCustomerAddressProvider extends ChangeNotifier {
   List<GetCustomerAddressList> _responseString;
-  bool _error = false;
+  CustomerAddressStatus _status = CustomerAddressStatus.loading;
   String _errorMessage = "";
+  int _requestId = 0;
 
   List<GetCustomerAddressList> get responseString => _responseString;
-  bool get error => _error;
+  CustomerAddressStatus get status => _status;
+  // Retain the legacy success flag for callers outside the status-based UI.
+  bool get error => _status == CustomerAddressStatus.success ||
+      _status == CustomerAddressStatus.empty;
   String get errorMessage => _errorMessage;
 
-  Future<List<List<GetCustomerAddressList>>> GetCustomerAddress() async {
-    SharedPreferences preferences=await SharedPreferences.getInstance();
-    int customerId=preferences.getInt("customerId");
-    final response = await get(
-      Uri.parse(AppUrl.get_customer_address_url+"$customerId"),
-    );
-    print(response.statusCode);
-
-    if(response.statusCode == 200){
-      try{
-
-        _responseString = getCustomerAddressListFromJson(response.body).reversed.toList();
-        _error = true;
-        _errorMessage = "Success";
-        print(response.body);
-
-      }catch(e){
-        _error = false;
-        _errorMessage = e.toString();
-        // _responseString = SignUpModel();
-      }
-
-    }else{
-      _error = false;
-      _errorMessage = "Something went wrong , please try again later";
-      // _responseString = SignUpModel();
-    }
+  Future<List<GetCustomerAddressList>> GetCustomerAddress() async {
+    final requestId = ++_requestId;
+    _status = CustomerAddressStatus.loading;
+    _responseString = null;
+    _errorMessage = "";
     notifyListeners();
-    print(_error);
-    print(_errorMessage);
+    try {
+      final preferences = await SharedPreferences.getInstance();
+      final customerId = preferences.getInt("customerId");
+      if (customerId == null || customerId <= 0) {
+        throw StateError('Missing customer');
+      }
+      final response = await get(
+        Uri.parse(AppUrl.get_customer_address_url+"$customerId"),
+      ).timeout(const Duration(seconds: 30));
+      if (response.statusCode != 200) {
+        throw StateError('Address request failed');
+      }
+      final addresses = getCustomerAddressListFromJson(response.body).reversed.toList();
+      if (requestId != _requestId) return null;
+      _responseString = addresses;
+      _status = addresses.isEmpty
+          ? CustomerAddressStatus.empty : CustomerAddressStatus.success;
+      _errorMessage = "Success";
+      notifyListeners();
+      return addresses;
+    } catch (_) {
+      if (requestId != _requestId) return null;
+      _responseString = null;
+      _status = CustomerAddressStatus.failure;
+      _errorMessage = "Unable to load addresses. Please try again.";
+      notifyListeners();
+      return null;
+    }
   }
 }

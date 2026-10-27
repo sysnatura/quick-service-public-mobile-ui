@@ -4,7 +4,9 @@ import 'package:aqscustomer/ModelClasses/save_service_one.dart';
 import 'package:aqscustomer/ModelClasses/save_service_two.dart';
 import 'package:aqscustomer/ModelClasses/set_as_primary_address.dart';
 import 'package:aqscustomer/providers/get_customer_address.dart';
+import 'package:aqscustomer/models/get_customer_address_list_model.dart' as customer_address;
 import 'package:aqscustomer/providers/get_service_questions_provider.dart';
+import 'package:aqscustomer/models/get_service_questions_model.dart' as questions;
 import 'package:aqscustomer/providers/service_list_provider.dart';
 import 'package:aqscustomer/screens/bottom_navigation.dart';
 import 'package:aqscustomer/screens/home_fragment.dart';
@@ -34,17 +36,20 @@ class BookService extends StatefulWidget {
   _BookServiceState createState() => _BookServiceState();
 }
 
+enum _AddressState { loading, success, empty, failure }
+
 class _BookServiceState extends State<BookService> {
   String serviceName;
   String img;
   String you = "_240";
   var dateValue;
   List selectedItemValue = [];
-  List <CheckBoxList>mainList = [];
-  List<CheckBoxList> checkBoxListGetItem = [];
-  List<DropDown> DropdownListGetItem = [];
-  List<RadioButton> RadioButtonGetList = [];
-  List<DropDown> textAreaValueList = [];
+  List<questions.GetServiceQuestionsModel> _questionGroups;
+  bool _questionFailure = false;
+  final Map<int, TextEditingController> _textAnswers = {};
+  final Map<int, Set<int>> _checkboxAnswers = {};
+  final Map<int, int> _dropdownAnswers = {};
+  final Map<int, int> _radioAnswers = {};
   bool isClicked = false;
   String _bookingDate;
   String _alternativeTime;
@@ -68,59 +73,281 @@ class _BookServiceState extends State<BookService> {
   bool _isChecked;
 
 
-  String houseNumber;
-  String location;
-  int cityId;
-  int stateId;
-  String latitude;
-  String longitude;
-  String geoLocation;
-  int customerAddressId;
+  _AddressState _addressState = _AddressState.loading;
+  List<customer_address.GetCustomerAddressList> _addresses = [];
+  customer_address.GetCustomerAddressList _selectedAddress;
+  int _addressRequestId = 0;
+  int _addressCustomerId;
+  bool _primaryUpdating = false;
   DateTime d1;
   DateTime d2;
 
   /// controller for textArea in Related Question
-  TextEditingController host = TextEditingController();
 
   String checkedItem;
   int _radioSelectedButton;
   int _curval;
   bool loader;
-  /// Set Address As Primary Api
-  Future<SetAsPrimary> SetPrimaryAddressFn(int id) async {
-
-    print('customer address id $id');
-    SharedPreferences preferences=await SharedPreferences.getInstance();
-    int addressId = preferences.getInt("addressId");
-    String tokenValue = preferences.getString("tokenValue");
-    var header = {
-      "authorization": "BearerCustomer $tokenValue$you",
-      "Content-Type": "application/json"
-    };
-
-    final response = await http.get(
-        Uri.parse(AppUrl.setAsPrimary_url+'$id'),
-        headers: header);
-    print(response.statusCode);
-    print(response.body);
-    if (response.statusCode == 200) {
-      final SetAsPrimary user = setAsPrimaryFromJson(response.body);
-      activeInactiveFunction();
-      if(user.statusCode == 200){
-        setState(() {
-          context.read<GetCustomerAddressProvider>().GetCustomerAddress();
-        });
-        ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-                content: Text(user.statusDescription)));
-      }else{
-        ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-                content: Text(user.statusDescription)));
+  Future<void> _loadQuestions() async {
+    try {
+      final provider = context.read<GetServiceQuestionsProvider>();
+      await provider.GetQuestions();
+      if (!mounted) return;
+      if (!provider.error || provider.responseString == null) {
+        throw StateError('Question request failed');
       }
+      final groups = provider.responseString;
+      final seen = <int>{};
+      for (final group in groups) {
+        for (final question in group.attributeQuestionDtoList ?? <questions.AttributeQuestionDtoList>[]) {
+          final id = question.attributeQuestionId;
+          if (id == null || id <= 0 || !seen.add(id)) {
+            throw StateError('Invalid question identity');
+          }
+          final options = _options(question);
+          if (question.inputType == 0) {
+            _textAnswers.putIfAbsent(id, () => TextEditingController());
+          } else if (question.inputType == 4) {
+            _checkboxAnswers.putIfAbsent(id, () => options
+                .where((option) => option.isDefault == true)
+                .map((option) => option.attributeOptionId).toSet());
+          } else if (question.inputType == 3 && options.isNotEmpty) {
+            // Preserve the previously displayed first-option dropdown default.
+            _dropdownAnswers.putIfAbsent(id, () => options.first.attributeOptionId);
+          }
+          // Radio questions previously started without a selection.
+        }
+      }
+      setState(() { _questionGroups = groups; });
+    } catch (_) {
+      if (mounted) setState(() { _questionFailure = true; });
+    }
+  }
+
+  List<questions.AttributeOptionDtoList> _options(questions.AttributeQuestionDtoList question) {
+    return (question.attributeOptionDtoList ?? <questions.AttributeOptionDtoList>[])
+        .where((option) => option != null && option.attributeOptionId != null && option.attributeOptionId > 0)
+        .toList();
+  }
+
+  List<CheckBoxList> _answerSnapshot() {
+    final answers = <CheckBoxList>[];
+    for (final group in _questionGroups) {
+      for (final question in group.attributeQuestionDtoList ?? <questions.AttributeQuestionDtoList>[]) {
+        final id = question.attributeQuestionId;
+        if (question.inputType == 0) {
+          answers.add(CheckBoxList(id: 0, name: _textAnswers[id].text, qstnId: id));
+        } else {
+          final selected = question.inputType == 4
+              ? (_checkboxAnswers[id] ?? <int>{})
+              : question.inputType == 3
+                  ? <int>{_dropdownAnswers[id]}
+                  : question.inputType == 2 ? <int>{_radioAnswers[id]} : <int>{};
+          for (final option in _options(question)) {
+            if (selected.contains(option.attributeOptionId)) {
+              answers.add(CheckBoxList(id: option.attributeOptionId, name: option.name ?? '', qstnId: id));
+            }
+          }
+        }
+      }
+    }
+    return List<CheckBoxList>.unmodifiable(answers);
+  }
+
+  List<Map<String, dynamic>> _serializeAnswers(List<CheckBoxList> answers) {
+    return answers.map((answer) => <String, dynamic>{
+      'serviceOrderItemAnswerDto': {
+        'answer': answer.name,
+        // ServiceOrderItemAnswerDto.AttributeOptionValue is a backend string.
+        'attributeoptionvalue': answer.id.toString(),
+        'attributeQuestionsId': answer.qstnId,
+      },
+    }).toList();
+  }
+
+  Widget _buildQuestion(questions.AttributeQuestionDtoList question) {
+    final id = question.attributeQuestionId;
+    final options = _options(question);
+    Widget input = const SizedBox.shrink();
+    if (question.inputType == 0) {
+      input = TextFormField(
+        key: ValueKey('text-$id'),
+        controller: _textAnswers[id],
+        enabled: !isClicked,
+        decoration: buildInputDecorationWithIcon('Answer..', Icons.edit),
+      );
+    } else if (question.inputType == 4) {
+      input = Column(children: [
+        for (final option in options)
+          CheckboxListTile(
+            key: ValueKey('checkbox-$id-${option.attributeOptionId}'),
+            title: Text(option.name ?? ''),
+            value: _checkboxAnswers[id].contains(option.attributeOptionId),
+            onChanged: isClicked ? null : (checked) {
+              setState(() {
+                if (checked == true) {
+                  _checkboxAnswers[id].add(option.attributeOptionId);
+                } else {
+                  _checkboxAnswers[id].remove(option.attributeOptionId);
+                }
+              });
+            },
+          ),
+      ]);
+    } else if (question.inputType == 3 && options.isNotEmpty) {
+      input = DropdownButton<int>(
+        key: ValueKey('dropdown-$id'),
+        isExpanded: true,
+        value: _dropdownAnswers[id],
+        items: options.map((option) => DropdownMenuItem<int>(
+          value: option.attributeOptionId,
+          child: Text(option.name ?? ''),
+        )).toList(),
+        onChanged: isClicked ? null : (value) {
+          setState(() { _dropdownAnswers[id] = value; });
+        },
+      );
+    } else if (question.inputType == 2) {
+      input = Column(children: [
+        for (final option in options)
+          RadioListTile<int>(
+            key: ValueKey('radio-$id-${option.attributeOptionId}'),
+            title: Text(option.name ?? ''),
+            value: option.attributeOptionId,
+            groupValue: _radioAnswers[id],
+            onChanged: isClicked ? null : (value) {
+              setState(() { _radioAnswers[id] = value; });
+            },
+          ),
+      ]);
+    }
+    return Padding(
+      key: ValueKey('question-$id'),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text(question.description ?? '', style: const TextStyle(color: headcolor, fontSize: 18)),
+        input,
+      ]),
+    );
+  }
+
+  @override
+  void dispose() {
+    for (final controller in _textAnswers.values) {
+      controller.dispose();
+    }
+    _description.dispose();
+    super.dispose();
+  }
+
+  bool _validAddress(customer_address.GetCustomerAddressList item) {
+    final address = item?.address;
+    return _addressCustomerId != null && _addressCustomerId > 0 &&
+        item != null && item.customerId == _addressCustomerId &&
+        item.customerAddressId != null && item.customerAddressId > 0 &&
+        item.addressId != null && item.addressId > 0 && address != null &&
+        address.cityId != null && address.cityId > 0 &&
+        address.stateId != null && address.stateId > 0 &&
+        address.countryId != null && address.countryId > 0 &&
+        address.location != null && address.location.trim().isNotEmpty &&
+        address.location.length <= 500 &&
+        (address.houseNo == null || address.houseNo.length <= 500);
+  }
+
+  String get _addressProblem {
+    if (_primaryUpdating) return 'Please wait for the address update to finish.';
+    if (_addressState == _AddressState.loading) return 'Please wait for addresses to load.';
+    if (_addressState == _AddressState.failure) return 'Unable to confirm your address. Please refresh and try again.';
+    if (_addressState == _AddressState.empty) return 'Please add an address before booking.';
+    if (!_validAddress(_selectedAddress)) return 'Choose one complete address as primary before booking.';
+    return null;
+  }
+
+  Future<void> _loadAddresses({int expectedPrimaryId}) async {
+    final requestId = ++_addressRequestId;
+    setState(() {
+      _addressState = _AddressState.loading;
+      _selectedAddress = null;
+    });
+    try {
+      final preferences = await SharedPreferences.getInstance();
+      final customerId = preferences.getInt("customerId");
+      if (!mounted || requestId != _addressRequestId) return;
+      final addresses = await context.read<GetCustomerAddressProvider>().GetCustomerAddress();
+      if (!mounted || requestId != _addressRequestId) return;
+      if (addresses == null) throw StateError('Address request failed');
+      final primaries = addresses.where((item) => item.isPrimary == 1).toList();
+      setState(() {
+        _addressCustomerId = customerId;
+        _addresses = addresses;
+        _addressState = addresses.isEmpty ? _AddressState.empty : _AddressState.success;
+        _selectedAddress = primaries.length == 1 && _validAddress(primaries.single) &&
+            addresses.where((item) => item.customerAddressId == primaries.single.customerAddressId).length == 1 &&
+            (expectedPrimaryId == null || primaries.single.customerAddressId == expectedPrimaryId)
+            ? primaries.single : null;
+      });
+    } catch (_) {
+      if (!mounted || requestId != _addressRequestId) return;
+      setState(() {
+        _addressState = _AddressState.failure;
+        _selectedAddress = null;
+      });
+    }
+  }
+
+  /// Keep selection tied to the primary address confirmed by the backend.
+  Future<SetAsPrimary> SetPrimaryAddressFn(int id) async {
+    if (_primaryUpdating || isClicked || _addressState != _AddressState.success) return null;
+    final matches = _addresses.where((item) => item.customerAddressId == id).toList();
+    if (matches.length != 1 || !_validAddress(matches.single)) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('This address is incomplete. Please choose another address.'),
+      ));
+      return null;
+    }
+    setState(() {
+      _primaryUpdating = true;
+      _selectedAddress = null;
+    });
+    ++_addressRequestId;
+    try {
+      final preferences = await SharedPreferences.getInstance();
+      final tokenValue = preferences.getString("tokenValue");
+      if (!mounted) return null;
+      if (preferences.getInt("customerId") != _addressCustomerId) {
+        throw StateError('Address session changed');
+      }
+      final response = await http.get(
+        Uri.parse(AppUrl.setAsPrimary_url+'$id'),
+        headers: {
+          "authorization": "BearerCustomer $tokenValue$you",
+          "Content-Type": "application/json"
+        },
+      ).timeout(const Duration(seconds: 30));
+      if (response.statusCode != 200) throw StateError('Address update failed');
+      final SetAsPrimary user = setAsPrimaryFromJson(response.body);
+      if (user.statusCode != 200) throw StateError('Address update rejected');
+      if (!mounted) return null;
+      await _loadAddresses(expectedPrimaryId: id);
+      if (!mounted) return null;
+      if (_selectedAddress?.customerAddressId != id) {
+        throw StateError('Address update not confirmed');
+      }
+      activeInactiveFunction();
       return user;
-    } else {
-      throw Exception('Failed to load');
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _addressState = _AddressState.failure;
+          _selectedAddress = null;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Unable to confirm the address update. Please refresh before booking.'),
+        ));
+      }
+      return null;
+    } finally {
+      if (mounted) setState(() { _primaryUpdating = false; });
     }
   }
 
@@ -129,21 +356,17 @@ class _BookServiceState extends State<BookService> {
       String houseno,String location,int cityid,int stateid,int countryid,
       String lat,String long,String geolocation,int customeraddressid,int isurgent,
       String description,int attributrid,List<CheckBoxList> getServiceOrderItem) async {
+    if (!mounted || !isClicked || _addressProblem != null) {
+      throw StateError('Address is not ready');
+    }
     // SaveServiceOne customer = saveServiceOne;
-    List<Map<String,dynamic>> AttributeList;
+    final attributeList = _serializeAnswers(getServiceOrderItem);
     SharedPreferences preferences=await SharedPreferences.getInstance();
     String tokenValue = preferences.getString("tokenValue");
-
-    for(int i=0;i<getServiceOrderItem.length;i++)
-      {
-        AttributeList=[{
-          "serviceOrderItemAnswerDto": {
-            "answer": getServiceOrderItem[i].name,
-            "attributeoptionvalue": getServiceOrderItem[i].id,
-            "attributeQuestionsId": getServiceOrderItem[i].qstnId
-          }
-        }];
-      }
+    if (!mounted || !isClicked || _addressProblem != null ||
+        preferences.getInt("customerId").toString() != customerID) {
+      throw StateError('Booking session changed');
+    }
 
     final Map<String, dynamic> apibody = {
       "customerId": customerID,
@@ -166,13 +389,12 @@ class _BookServiceState extends State<BookService> {
           "description": description,
           "attributeId": attributrid,
           "attributeDto": {
-            "attributeQuestionDtoList": AttributeList
+            "attributeQuestionDtoList": attributeList
           }
         }
       ]
     };
     String requestBody = json.encode(apibody);
-    print("this is Api Body $apibody");
     var header = {
       "authorization": "BearerCustomer $tokenValue$you",
       "Content-Type": "application/json"
@@ -183,10 +405,9 @@ class _BookServiceState extends State<BookService> {
             AppUrl.book_service),
         body: requestBody,
         headers: header);
-    print(response.body);
     if (response.statusCode == 200) {
-      print("save service order response ${response.body}");
       final SaveServiceTwo user = saveServiceTwoFromJson(response.body);
+      if (!mounted) return user;
       if(user.statusCode == 200){
         loader = false;
         Navigator.pushReplacement(
@@ -218,6 +439,8 @@ class _BookServiceState extends State<BookService> {
     img = widget.img;
     _bookingDate = widget.bookingDate;
     _alternativeTime = widget.alternativeDate;
+    _loadAddresses();
+    _loadQuestions();
   }
   @override
   Widget build(BuildContext context) {
@@ -230,8 +453,6 @@ class _BookServiceState extends State<BookService> {
     height = size.height;
     width = size.width;
 
-    context.read<GetCustomerAddressProvider>().GetCustomerAddress();
-    context.read<GetServiceQuestionsProvider>().GetQuestions();
     // context.read<ServiceListProvider>().GetList();
     return Scaffold(
       backgroundColor: whitecolor,
@@ -391,11 +612,13 @@ class _BookServiceState extends State<BookService> {
                   style: textwithblackrobotoregular(),
                 ),
               ),
-              Consumer<GetCustomerAddressProvider>(
-                  builder: (context, value, child) {
-                    return !value.error
+              Builder(
+                  builder: (context) {
+                    return _addressState == _AddressState.loading
                         ? Center(child: CircularProgressIndicator())
-                        : value.error && value.responseString.isEmpty
+                        : _addressState == _AddressState.failure
+                        ? Text('Unable to load or confirm addresses. Please refresh.', style: textwithrobotoregular())
+                        : _addressState == _AddressState.empty
                         ? Center(
                       child: Text(
                         "No Address",
@@ -410,8 +633,7 @@ class _BookServiceState extends State<BookService> {
                             physics: BouncingScrollPhysics(),
                             child: Row(
                               crossAxisAlignment: CrossAxisAlignment.start,
-                              children: List.generate(value.responseString.length, (index) {
-                              value.responseString[index].setPrimary = false;
+                              children: List.generate(_addresses.length, (index) {
                               return Card(
                                 child: Container(
                                   width: constraints.maxWidth < 308
@@ -423,7 +645,7 @@ class _BookServiceState extends State<BookService> {
                                     mainAxisAlignment:
                                     MainAxisAlignment.start,
                                     children: [
-                                      if (value.responseString[index].customer
+                                      if (_addresses[index].customer
                                           .customerName !=
                                           null)
                                         Container(
@@ -431,25 +653,25 @@ class _BookServiceState extends State<BookService> {
                                           margin: const EdgeInsets.only(
                                               left: 8, top: 8),
                                           child: Text(
-                                            value.responseString[index].customer.customerName,
+                                            _addresses[index].customer.customerName,
                                             style: textwithblackrobotoregular(),
                                           ),
                                         ),
 
 
-                                      if (value.responseString[index].address.stateDto.name != null)
+                                      if (_addresses[index].address.stateDto.name != null)
                                         Container(
                                           alignment: Alignment.topLeft,
                                           margin: const EdgeInsets.only(
                                               left: 8, top: 8),
                                           child: Text(
-                                            value.responseString[index]
+                                            _addresses[index]
                                                 .address.stateDto.name,
                                             style:
                                             textwithblackrobotoregular(),
                                           ),
                                         ),
-                                      if (value.responseString[index].address.stateDto.name == null)
+                                      if (_addresses[index].address.stateDto.name == null)
                                         Container(
                                           alignment: Alignment.topLeft,
                                           margin: const EdgeInsets.only(
@@ -461,19 +683,19 @@ class _BookServiceState extends State<BookService> {
                                         ),
 
 
-                                      if (value.responseString[index].address.location != null)
+                                      if (_addresses[index].address.location != null)
                                         Container(
                                           alignment: Alignment.topLeft,
                                           margin: const EdgeInsets.only(
                                               left: 8, top: 8),
                                           child: Text(
-                                            value.responseString[index]
+                                            _addresses[index]
                                                 .address.location,
                                             style:
                                             textwithblackrobotoregular(),
                                           ),
                                         ),
-                                      if (value.responseString[index].address.location == null)
+                                      if (_addresses[index].address.location == null)
                                         Container(
                                           alignment: Alignment.topLeft,
                                           margin: const EdgeInsets.only(
@@ -485,19 +707,19 @@ class _BookServiceState extends State<BookService> {
                                         ),
 
 
-                                      if (value.responseString[index].address.geoLocation != null)
+                                      if (_addresses[index].address.geoLocation != null)
                                         Container(
                                           alignment: Alignment.topLeft,
                                           margin: const EdgeInsets.only(
                                               left: 8, top: 8),
                                           child: Text(
-                                            value.responseString[index]
+                                            _addresses[index]
                                                 .address.geoLocation,
                                             style:
                                             textwithblackrobotoregular(),
                                           ),
                                         ),
-                                      if (value.responseString[index].address.geoLocation == null)
+                                      if (_addresses[index].address.geoLocation == null)
                                         Container(
                                           alignment: Alignment.topLeft,
                                           margin: const EdgeInsets.only(
@@ -511,41 +733,12 @@ class _BookServiceState extends State<BookService> {
                                         mainAxisAlignment: MainAxisAlignment.end,
                                         children: [
                                           Flexible(child: Text("Set as Primary",style: textwithblackrobotolight())),
-                                          StatefulBuilder(
-                                          builder: (context, setState) {
-                                            if(value.responseString[index].isPrimary == 1){
-                                              value.responseString[index].setPrimary = true;
-                                              int customerId = value.responseString[index].customerId;
-                                              print("customerId $customerId");
-                                              houseNumber = value.responseString[index].address.houseNo;
-                                              print("houseNumber$houseNumber");
-                                              customerAddressId = value.responseString[index].customerAddressId;
-                                              location = value.responseString[index].address.location;
-                                              cityId = value.responseString[index].address.cityId;
-                                              stateId = value.responseString[index].address.stateId;
-                                              latitude = value.responseString[index].address.latitude;
-                                              longitude = value.responseString[index].address.longitude;
-                                              geoLocation = value.responseString[index].address.geoLocation;
-                                            }
-                                          return
                                             Checkbox(
-                                              value: value.responseString[index].setPrimary,
-                                              onChanged: (bool val) async {
-                                                SharedPreferences preferences =
-                                                await SharedPreferences.getInstance();
-                                                int customerAddressId = value.responseString[index].customerAddressId;
-                                                print("customerAddressId id is this $customerAddressId");
-                                                setState(() {
-                                                  value.responseString[index]
-                                                      .setPrimary = val;
-                                                  if (val == true) {
-                                                    SetPrimaryAddressFn(customerAddressId);
-
-                                                  }
-                                                });
+                                              value: _selectedAddress?.customerAddressId == _addresses[index].customerAddressId,
+                                              onChanged: _primaryUpdating || isClicked ? null : (bool val) {
+                                                if (val == true) SetPrimaryAddressFn(_addresses[index].customerAddressId);
                                               },
-                                            );
-                                          } ),
+                                            ),
                                         ],
                                       )
 
@@ -558,8 +751,17 @@ class _BookServiceState extends State<BookService> {
                           ),
                         ));
                   }),
+              Row(
+                children: [
+                  Expanded(child: Text(_addressProblem ?? 'Primary address confirmed.')),
+                  TextButton(
+                    onPressed: _primaryUpdating || isClicked ? null : () { _loadAddresses(); },
+                    child: const Text('Refresh addresses'),
+                  ),
+                ],
+              ),
               GestureDetector(
-                onTap: () {
+                onTap: _primaryUpdating || isClicked ? null : () {
                   Navigator.pushReplacement(context,
                       MaterialPageRoute(builder: (context) => AddNewAddress(nav: 1,serviceName: serviceName,img: img,bookingDate: _bookingDate,alternativeDate: _alternativeTime,)));
                 },
@@ -649,390 +851,71 @@ class _BookServiceState extends State<BookService> {
                 ),
               ),
 
-              Consumer<GetServiceQuestionsProvider>(
-                builder: (context, value, child) {
-                  children.clear();
-                  return !value.error ? const CircularProgressIndicator() :value.error && value.responseString == null ? const Center(child: Text("No Data"),):
-                   ListView.builder(
-                        shrinkWrap: true,
-                        physics: NeverScrollableScrollPhysics(),
-                        itemCount: value.responseString.length,
-                        itemBuilder: (context, index) {
-                          for(int i=0;i<value.responseString[index].attributeQuestionDtoList.length;i++){
-                            // print(value.responseString[index].attributeQuestionDtoList[i].description);
-                            children.add(
-                              Container(
-                                  margin: EdgeInsets.only(top: 5,left: 10,right: 10),
-                                  height: 40,
-                                  width: width*2,
-                                  padding: EdgeInsets.all(5),
-                                  child: Align(
-                                      alignment: Alignment.topLeft,
-                                      child: Text(value.responseString[index].attributeQuestionDtoList[i].description,style: TextStyle(color: headcolor,fontSize: 18),))),
-                            );
-
-                            var iD;
-                              /// Showing TextArea
-                              if(value.responseString[index].attributeQuestionDtoList[i].inputType == 0){
-                                for(var p=0; p<value.responseString[index].attributeQuestionDtoList[i].attributeOptionDtoList.length; p++){
-
-                                  DropDown(id: value.responseString[index].attributeQuestionDtoList[i]
-                                      .attributeOptionDtoList[p].attributeOptionId, name: value.responseString[index].attributeQuestionDtoList[i]
-                                      .attributeOptionDtoList[p].name,qstnId: value.responseString[index].attributeQuestionDtoList[i].attributeQuestionId,
-                                      title: value.responseString[index].attributeQuestionDtoList[i].description);
-
-                                  iD = value.responseString[index].attributeQuestionDtoList[i].attributeQuestionId;
-                                }
-                                children.add(
-                                    Container(
-                                      margin: EdgeInsets.only(top: 5,left: 10,right: 10),
-                                      child: TextFormField(
-                                        decoration: InputDecoration(
-                                            hintText: "Answer..",
-                                            hintStyle: TextStyle(color: Colors.blue),
-                                            border: OutlineInputBorder(
-                                                borderRadius:
-                                                BorderRadius.all(new Radius.circular(15.0))),
-                                            labelStyle: TextStyle(color: Colors.black54)),
-                                        textAlign: TextAlign.left,
-                                        style:  const TextStyle(
-                                          color: Colors.blue,
-                                          fontSize: 15.0,
-                                        ),
-                                        controller: host,
-                                            onSaved:(value){
-                                           setState(() {
-                                             textAreaValueList.add(DropDown(id: 0, name: host.text, qstnId: iD));
-                                          });
-                                        }
-                                      ),
-                                    ),
-                                );
-                              }
-
-
-                              for(int j=0;j<value.responseString[index].attributeQuestionDtoList[i].attributeOptionDtoList.length;j++){
-                                // print(value.responseString[index].attributeQuestionDtoList[i].attributeOptionDtoList[j].name);
-///----------------------------------------------------------------------------------------------------------------------------------------------------------///
-
-                                ///showing checkboxTile
-                                if(value.responseString[index].attributeQuestionDtoList[i].inputType == 4){
-                                  List<CheckBoxList> checkBoxListItem = [];
-
-                                  //checkBoxListItem.clear();
-                                  for(var p=0; p<value.responseString[index].attributeQuestionDtoList[i].attributeOptionDtoList.length; p++){
-
-                                    checkBoxListItem.add(CheckBoxList(id: value.responseString[index].attributeQuestionDtoList[i]
-                                        .attributeOptionDtoList[p].attributeOptionId, name: value.responseString[index].attributeQuestionDtoList[i]
-                                        .attributeOptionDtoList[p].name,isCheck: value.responseString[index].attributeQuestionDtoList[i]
-                                        .attributeOptionDtoList[p].isDefault,qstnId: value.responseString[index].attributeQuestionDtoList[i].attributeQuestionId,
-                                         title: value.responseString[index].attributeQuestionDtoList[i].description));
-                                  }
-
-                                    children.add(
-                                      Column(
-                                        children: [
-                                          Column(
-                                            children: checkBoxListItem.map((item){
-                                              return StatefulBuilder(
-                                                  builder: (context, setState) {
-                                                   // checkBoxListItem.clear();
-                                                    return CheckboxListTile(
-                                                      title: Text(item.name),
-                                                      value: item.isCheck,
-                                                      onChanged: (newValue){
-                                                        setState(() {
-                                                          item.isCheck = newValue;
-                                                          print("This is new value of CheckBox Get List is $newValue");
-                                                        });
-
-                                                        /// Adding selected checked value(item) to CheckBoxListGetItem
-
-                                                        if(item.isCheck == true){
-                                                          checkBoxListGetItem.add(CheckBoxList(id: item.id, name: item.name,isCheck: newValue,
-                                                          qstnId: item.qstnId,title:item.title ));
-
-                                                          ///only To >show< sElected CheckBox Items in the checkBoxListGetItem
-                                                          for(int l=0; l<checkBoxListGetItem.length; l++){
-                                                            print("Value Added to drop Down GetList Item Id is ${checkBoxListGetItem[l].id}");
-                                                            print("Value Added to drop Down GetList Item Name is ${checkBoxListGetItem[l].name}");
-                                                            print("Value Added to drop Down GetList Item Question Id is ${checkBoxListGetItem[l].qstnId}");
-                                                            print("Value Added to drop Down GetList Item Title is ${checkBoxListGetItem[l].title}");
-                                                          }
-                                                        }else if(item.isCheck == false){
-                                                          for(int h=0; h<checkBoxListGetItem.length; h++){
-                                                            if(item.id == checkBoxListGetItem[h].id){
-                                                              checkBoxListGetItem.removeAt(index);
-                                                              print("Removed Item from CheckBox GetList is ${item.name}");
-                                                              print(item.id);
-                                                            }
-                                                          }
-                                                        }
-                                                        print(checkBoxListGetItem);
-                                                        print("No:of Items in CheckBox GetList are ${checkBoxListGetItem.length.toString()}");
-
-                                                      },
-                                                    );
-                                                  });
-                                            }).toList()
-                                          ),
-                                        ],
-                                      ),
-                                    );
-                                }
-///----------------------------------------------------------------------------------------------------------------------------------------------------------///
-
-                                ///Showing DropDown lIST
-                                if(value.responseString[index].attributeQuestionDtoList[i].inputType == 3){
-
-
-                                  List<String> dropDownValues = [];
-
-                                  /// Adding values to DropDown list
-                                  List<DropDown> DropDownList = [];
-                                  DropDownList.clear();
-                                  for(int p=0; p<value.responseString[index].attributeQuestionDtoList[i].attributeOptionDtoList.length; p++) {
-
-                                    ///To >show< value in DropDown "FirstValue"
-
-                                      checkedItem = value.responseString[index].attributeQuestionDtoList[i]
-                                        .attributeOptionDtoList[p].name;
-
-                                      dropDownValues.add(checkedItem);
-
-                                    DropDownList.add(DropDown(id: value.responseString[index].attributeQuestionDtoList[i]
-                                        .attributeOptionDtoList[p].attributeOptionId, name: value.responseString[index].attributeQuestionDtoList[i]
-                                        .attributeOptionDtoList[p].name,qstnId: value.responseString[index].attributeQuestionDtoList[i].attributeQuestionId,
-                                         title: value.responseString[index].attributeQuestionDtoList[i].description,)
-
-                                    );
-                                  }
-                                  print("values in that dropdown are $dropDownValues");
-
-                                  DropdownListGetItem.clear();
-                                  children.add(
-                                    StatefulBuilder(
-                                    builder: (context, setState) {
-                                      for(int q=0;q<dropDownValues.length; q++) {
-                                        return Container(
-                                          margin: EdgeInsets.only(left: 10,right: 10),
-                                          padding: const EdgeInsets.only(left: 10, right: 10),
-                                          child: DropdownButton(
-                                            isExpanded: true,
-                                            underline: Container(
-                                              height: 1.0,
-                                              decoration: const BoxDecoration(
-                                                  border: Border(
-                                                      bottom: BorderSide(
-                                                          color: Colors.transparent,
-                                                          width: 0.0))),
-                                            ),
-                                            items: DropDownList.map((item) {
-                                              return DropdownMenuItem(
-                                                child: Text(item.name),
-                                                value: item.name.toString(),
-                                              );
-                                            }).toList(),
-                                            value: dropDownValues[q],
-                                            onChanged: (newVal) {
-                                              setState(() {
-                                                dropDownValues[q] = newVal;
-                                                print("Selected value from the dropDown is $newVal");
-                                              });
-
-                                              /// Adding ONLY Selected Value fROM DropDown to List name-DropdownListGetItem
-                                              for (int r = 0; r < DropDownList.length; r++) {
-                                                if (dropDownValues[q] == DropDownList[r].name) {
-                                                  DropdownListGetItem.clear();
-                                                  DropdownListGetItem.add(DropDown(
-                                                      id: DropDownList[r].id,
-                                                      name: DropDownList[r].name,
-                                                      qstnId: DropDownList[r].qstnId,
-                                                      title: DropDownList[r].title
-                                                  ));
-                                                }
-                                              }
-                                              ///only To >show< sElected DropDown Items in the DropdownListGetItem
-                                              for (int g = 0; g < DropdownListGetItem.length; g++) {
-                                                print("Value Added to drop Down GetList Item Id is ${DropdownListGetItem[g].id}");
-                                                print("Value Added to drop Down GetList Item Name is ${DropdownListGetItem[g].name}");
-                                                print("Value Added to drop Down GetList Item Question Id is ${DropdownListGetItem[g].qstnId}");
-                                                print("Value Added to drop Down GetList Item Title is ${DropdownListGetItem[g].title}");
-                                              }
-                                              print("Selected Dropdown Count is ${DropdownListGetItem.length}");
-                                            },
-                                          ),
-                                        );
-                                      }
-                                      return Container();
-                                    }),
-                                  );
-                                }
-
-///----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------///
-
-                                ///Showing Radio Button lIST
-                                if(value.responseString[index].attributeQuestionDtoList[i].inputType == 2) {
-
-                                  List<RadioButton> RadioList = [];
-                                  RadioList.clear();
-                                  for (var p = 0; p < value.responseString[index].attributeQuestionDtoList[i].attributeOptionDtoList.length; p++) {
-                                    RadioList.add(RadioButton(id: value.responseString[index].attributeQuestionDtoList[i]
-                                        .attributeOptionDtoList[p].attributeOptionId, name: value.responseString[index].attributeQuestionDtoList[i]
-                                        .attributeOptionDtoList[p].name,isCheck: false,groupValue: p,title: value.responseString[index].attributeQuestionDtoList[i]
-                                        .description)
-
-                                    );
-                                    print("Group value is ${RadioList[p].groupValue}");
-                                  }
-
-                                    children.add(
-                                      StatefulBuilder(
-                                      builder: (context, setState) {
-                                        return Column(
-                                            children: [
-                                              Container(
-                                                margin:EdgeInsets.only(left: 10,right: 10),
-                                                child: Column(
-                                                    mainAxisAlignment: MainAxisAlignment
-                                                        .start,
-                                                    children: RadioList.map((
-                                                        elements) {
-                                                      return Row(
-                                                        children: [
-                                                          Radio(
-                                                            value: elements.groupValue-1,
-                                                            groupValue: _curval,
-                                                            activeColor: headcolor,
-                                                            onChanged: (value) {
-                                                              setState(() {
-                                                                _curval = value;
-                                                              });
-                                                               print("Selected Radio Button Id is ${elements.id}");
-                                                              // print("group value" + elements.groupValue.toString());
-                                                              // print("value" + value.toString());
-
-
-                                                                for(int e=0; e<RadioList.length; e++){
-                                                                  if(elements.id == RadioList[e].id){
-                                                                    RadioButtonGetList.clear();
-                                                                    RadioButtonGetList.add(RadioButton(id: RadioList[e].id,
-                                                                        name: RadioList[e].name,
-                                                                        isCheck: RadioList[e].isCheck,
-                                                                        groupValue: RadioList[e].groupValue,
-                                                                        title: RadioList[e].title));
-                                                                  }
-                                                                }
-
-                                                              for (int g = 0; g < RadioButtonGetList.length; g++) {
-                                                                print("Value Added to RadioButtonGetList Title is ${RadioButtonGetList[g].title}");
-                                                                print("Value Added to RadioButtonGetList Id is ${RadioButtonGetList[g].id}");
-                                                                print("Value Added to RadioButtonGetList Name is ${RadioButtonGetList[g].name}");
-                                                              }
-                                                              print("Selected Dropdown Count is ${RadioButtonGetList.length}");
-
-
-                                                                // print(_stateName);
-                                                            },
-                                                          ),
-                                                          Text(elements.name)
-                                                        ],
-                                                      );
-                                                      // return StatefulBuilder(
-                                                      // builder: (context, setState) {
-                                                      //   // RadioList.clear();
-                                                      //
-                                                      // }
-                                                      // );
-                                                    }).toList()
-                                                ),
-                                              ),
-                                            ]
-                                        );
-                                      })
-                                    );
-
-                                }break;
-                              }
-
-                          }
-                          return Column(
-                            children: children,
-                          );
-                        },
-
-                    );
-                },
-              ),
+              if (_questionFailure)
+                const Text('Unable to load questions. Please reopen this booking screen.')
+              else if (_questionGroups == null)
+                const Center(child: CircularProgressIndicator())
+              else
+                Column(children: [
+                  for (final group in _questionGroups)
+                    for (final question in group.attributeQuestionDtoList ?? <questions.AttributeQuestionDtoList>[])
+                      _buildQuestion(question),
+                ]),
               GestureDetector(
                 onTap: () async {
+                  if (isClicked) return;
+                  if (_questionGroups == null || _questionFailure) {
+                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                      content: Text('Please wait for questions to load, or reopen this booking screen if loading failed.'),
+                    ));
+                    return;
+                  }
+                  final addressProblem = _addressProblem;
+                  if (addressProblem != null) {
+                    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(addressProblem)));
+                    return;
+                  }
                   if(_form.currentState.validate()){
+                    final selected = _selectedAddress;
+                    final address = selected.address;
+                    final snapshot = Map<String, dynamic>.unmodifiable({
+                      'customerAddressId': selected.customerAddressId,
+                      'houseNo': address.houseNo,
+                      'location': address.location,
+                      'cityId': address.cityId,
+                      'stateId': address.stateId,
+                      'countryId': address.countryId,
+                      'latitude': address.latitude,
+                      'longitude': address.longitude,
+                      'geoLocation': address.geoLocation,
+                    });
+                    setState(() { isClicked = true; });
+                    try {
                     _form.currentState.save();
 
-                    for(int i=0; i< textAreaValueList.length; i++){
-                      mainList.add(CheckBoxList(id: textAreaValueList[i].id, name: textAreaValueList[i].name, qstnId: textAreaValueList[i].qstnId));
-                    }
-                    for(int i=0; i<checkBoxListGetItem.length; i++){
-                      mainList.add(CheckBoxList(name: checkBoxListGetItem[i].name, id: checkBoxListGetItem[i].id, qstnId: checkBoxListGetItem[i].qstnId));
-                    }
-                    for(int i=0; i<DropdownListGetItem.length; i++){
-                      mainList.add(CheckBoxList(name: DropdownListGetItem[i].name,id: DropdownListGetItem[i].id, qstnId: DropdownListGetItem[i].qstnId));
-                    }
-                    for(int i=0; i<RadioButtonGetList.length; i++){
-                      mainList.add(CheckBoxList(name: RadioButtonGetList[i].name,id: RadioButtonGetList[i].id, qstnId: RadioButtonGetList[i].groupValue));
-                    }
-                    for(int i=0; i<mainList.length; i++){
-                      print("main list - id ${mainList[i].id}");
-                      print("main list - name ${mainList[i].name}");
-                      print("main list - qstn Id ${mainList[i].qstnId}");
-                      print("main list - title ${mainList[i].title}");
-                    }
-
-                    List<Map<String,dynamic>> serviceOrderItem;
-                    for(int z=0;z<mainList.length;z++)
-                    {
-                      serviceOrderItem = [{
-                        "serviceOrderItemAnswerDto": {
-                          "answer": mainList[z].name,
-                          "attributeoptionvalue": mainList[z].id,
-                          "attributeQuestionsId": mainList[z].qstnId
-                        }
-                      }];
-                      print("ohhhhhhhhhhhhhhhhhhhhhhhhhh$mainList");
-                    }
+                    final answerSnapshot = _answerSnapshot();
 
                     SharedPreferences preferences=await SharedPreferences.getInstance();
                     int customerId = preferences.getInt("customerId");
-                    int addressId = preferences.getInt("addressId");
                     //int customerAddressId = preferences.getInt("customerAddressId");
                     int attributeId = preferences.getInt("attributeId");
-                    setState(()  {
-                      isClicked = true;
-                      // ServiceOrderAddressDto seviceorderaddressdto = ServiceOrderAddressDto(
-                      //   cityId: 7,
-                      //   countryId: 3,
-                      //   stateId: 10,
-                      //   customerAddressId: customerAddressId,
-                      //   geoLocation: "Qatar",
-                      //   houseNo: "1st Floor",
-                      //   latitude: "25.354826",
-                      //   longitude: "51.183884",
-                      //   location: "Infoventures Villa, Doha, Qatars"
-                      // );
-
-                      Save(customerId.toString(), DateTime.parse(_bookingDate), DateTime.parse(_alternativeTime),
-                          houseNumber,location, cityId, stateId, 2, latitude, longitude,
-                          geoLocation, customerAddressId,_radioSelected,_description.text,attributeId, mainList);
-                      // service = Save(SaveServiceOne(
-                      //   customerId: customerId.toString(),
-                      //   alternativeServiceDate: DateTime.parse(_bookingDate),
-                      //   serviceDate:DateTime.parse(_bookingDate),
-                      //   serviceOrderAddressDto: seviceorderaddressdto,
-                      //   serviceOrderItemDto: serviceOrderItem,
-                      // )
-                      // );
-
-                    });
+                    if (!mounted) return;
+                    if (_addressProblem != null || selected != _selectedAddress ||
+                        customerId != selected.customerId || attributeId == null || attributeId <= 0) {
+                      throw StateError('Booking prerequisites changed');
+                    }
+                    await Save(customerId.toString(), DateTime.parse(_bookingDate), DateTime.parse(_alternativeTime),
+                        snapshot['houseNo'], snapshot['location'], snapshot['cityId'], snapshot['stateId'],
+                        snapshot['countryId'], snapshot['latitude'], snapshot['longitude'],
+                        snapshot['geoLocation'], snapshot['customerAddressId'],
+                        _radioSelected, _description.text, attributeId, answerSnapshot);
+                    } catch (_) {
+                      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                        content: Text('Unable to confirm booking. Check your orders before trying again.'),
+                      ));
+                    } finally {
+                      if (mounted) setState(() { isClicked = false; });
+                    }
 
                   }else{
                     print("Not Validated");
@@ -1069,7 +952,8 @@ class _BookServiceState extends State<BookService> {
     return true;
   }
   Future<bool> activeInactiveFunction() {
-    showDialog(
+    if (!mounted) return Future<bool>.value(false);
+    return showDialog<bool>(
       context: context,
       builder: (context) {
         return AlertDialog(
@@ -1080,59 +964,19 @@ class _BookServiceState extends State<BookService> {
             FlatButton(
               child: Text('Ok',style: TextStyle(color: Colors.black87)),
               onPressed: () {
-                setState(() {
-                  Provider.of<GetCustomerAddressProvider>(context,listen: false).GetCustomerAddress();
-                });
+                if (!mounted) return;
                 Navigator.of(context).pop(true);
               },
             )
           ],
         );
       },
-    ) ?? false;
+    );
   }
 }
-class DropDown{
-  DropDown({
-    @required this.id,
-    @required this.name,
-    @required this.qstnId,
-    @required this.title,
-
-  });
-  int id;
-  String name;
-  int qstnId;
-  String title;
-
-}
-
-class CheckBoxList{
-  CheckBoxList({
-    @required this.id,
-    @required this.name,
-    @required this.isCheck,
-    @required this.qstnId,
-    @required this.title,
-  });
-  int id;
-  String name;
-  bool isCheck;
-  int qstnId;
-  String title;
-}
-class RadioButton{
-  RadioButton({
-    @required this.id,
-    @required this.name,
-    @required this.isCheck,
-    @required this.groupValue,
-    @required this.title
-
-  });
-  int id;
-  String name;
-  bool isCheck;
-  int groupValue;
-  String title;
+class CheckBoxList {
+  CheckBoxList({@required this.id, @required this.name, @required this.qstnId});
+  final int id;
+  final String name;
+  final int qstnId;
 }

@@ -25,6 +25,19 @@ class AddressList extends StatefulWidget {
 
 class _AddressListState extends State<AddressList> {
 
+  @override
+  void initState() {
+    super.initState();
+    Future<void>.microtask(() async {
+      if (mounted) await _refreshAddresses();
+    });
+  }
+
+  Future<void> _refreshAddresses() async {
+    if (!mounted) return;
+    await context.read<GetCustomerAddressProvider>().GetCustomerAddress();
+  }
+
   int customerAddressId;
 
   String to = '_240';
@@ -108,7 +121,6 @@ class _AddressListState extends State<AddressList> {
 
   @override
   Widget build(BuildContext context) {
-    context.read<GetCustomerAddressProvider>().GetCustomerAddress();
     return Scaffold(
       backgroundColor: whitecolor,
       appBar: AppBar(
@@ -131,12 +143,26 @@ class _AddressListState extends State<AddressList> {
       body: WillPopScope(
         onWillPop: _onWillPop,
         child: RefreshIndicator(
-          onRefresh: () async {},
+          onRefresh: _refreshAddresses,
           child: Consumer<GetCustomerAddressProvider>(
               builder: (context, value, child) {
-            return !value.error
+            if (value.status == CustomerAddressStatus.failure) {
+              return Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(value.errorMessage, textAlign: TextAlign.center),
+                    TextButton(
+                      onPressed: _refreshAddresses,
+                      child: const Text('Retry'),
+                    ),
+                  ],
+                ),
+              );
+            }
+            return value.status == CustomerAddressStatus.loading
                 ? Center(child: CircularProgressIndicator())
-                : value.error && value.responseString == null
+                : value.status == CustomerAddressStatus.empty
                     ? Center(
                         child: Text(
                           "No Address",
